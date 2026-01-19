@@ -15,9 +15,41 @@ std::shared_ptr<Tensor> MatmulForward(const std::shared_ptr<Tensor> &input, cons
     // TODO：实现CPU上的矩阵乘法前向计算
     // REF:
     // =================================== 作业 ===================================
+    switch(input->Dims().size()){
+        case 2:{
+            CHECK_EQ(input->Dims()[1],other->Dims()[0]);
+            auto output = std::make_shared<Tensor>(std::vector<int64_t>{input->Dims()[0],other->Dims()[1]},DataType::kFLOAT32);
+            //二维矩阵直接使用矩阵库进行计算
+            output->EigenMatrix() = input->EigenMatrix() * other->EigenMatrix();
+            return {output};
+            break;
+        }
+        case 3:{
+            CHECK_EQ(input->Dims()[0],other->Dims()[0]);
+            int64_t batch_size = input->Dims()[0];
+            int64_t m = input->Dims()[1];
+            CHECK_EQ(input->Dims()[2],other->Dims()[1]);
+            int64_t k = input->Dims()[2];
+            int64_t n = other->Dims()[2];
 
-    auto output = std::make_shared<Tensor>();
-    return {output};
+            auto output = std::make_shared<Tensor>(std::vector<int64_t>{batch_size,m,n},DataType::kFLOAT32);
+            
+            float* input_data = static_cast<float*>(input->DataPtr());  
+            float* other_data =static_cast<float*>( other->DataPtr());
+            float* output_data = static_cast<float*>(output->DataPtr());
+
+            for(int b = 0;b<input->Dims()[0];b++){
+                Eigen::Map<Eigen::Matrix<float,Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> eigen_A(input_data + b*m*k,m,k);
+                Eigen::Map<Eigen::Matrix<float,Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> eigen_B(other_data + b*k*n,k,n);
+                Eigen::Map<Eigen::Matrix<float,Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> eigen_C(output_data + b*m*n,m,n);
+                eigen_C = eigen_A * eigen_B;
+            }
+            return {output};
+            break;
+        }
+        default:
+            {LOG(ERROR)   << "没有实现更高维度矩阵乘法";}
+    }
 }
 
 std::tuple<std::shared_ptr<Tensor>, std::shared_ptr<Tensor>>
@@ -27,10 +59,31 @@ MatmulBackward(const std::shared_ptr<Tensor> &input, const std::shared_ptr<Tenso
     // TODO：实现CPU上的矩阵乘法反向传播
     // REF:
     // =================================== 作业 ===================================
+    //检查输入维度
+    const auto &input_dims = input->Dims();
+    CHECK_GE(input_dims.size(),2);
 
-    auto grad_input = std::make_shared<Tensor>();
-    auto grad_other = std::make_shared<Tensor>();
-    return {grad_input, grad_other};
+    const auto &other_dims = other->Dims();
+    CHECK_EQ(other_dims.size(),2);
+
+    switch(input_dims.size()){
+        case 2:{
+            int64_t m = input->Dims()[0];
+            int64_t k = input->Dims()[1];
+            int64_t n = other->Dims()[1];
+            auto grad_input = std::make_shared<Tensor>(std::vector<int64_t>{m,k},DataType::kFLOAT32);
+            auto grad_other = std::make_shared<Tensor>(std::vector<int64_t>{k,n},DataType::kFLOAT32);
+
+            grad_input->EigenMatrix() = grad_output->EigenMatrix() * other->EigenMatrix().transpose();
+            grad_other->EigenMatrix() = input->EigenMatrix().transpose() * grad_output->EigenMatrix();
+            return {grad_input, grad_other};
+            break;
+        }
+        case 3:{
+            LOG(ERROR)   << "该功能未实现";
+            break;
+        }
+    }
 }
 
 std::shared_ptr<Tensor> LinearForward(const std::shared_ptr<Tensor> &input, const std::shared_ptr<Tensor> &weight,
