@@ -8,6 +8,8 @@
 #include <numeric>
 #include <unordered_map>
 #include <vector>
+#include <queue>
+#include <unordered_set> 
 
 #ifdef USE_CUDA
 #include "cuda_runtime_api.h"
@@ -282,8 +284,46 @@ std::shared_ptr<Tensor> Tensor::Flatten(int64_t start, int64_t end) {
     // TODO：实现张量扁平化操作，将指定维度范围[start, end]内的所有维度合并为一个维度
     // HINT:
     // =================================== 作业 ===================================
-
-    return std::make_shared<Tensor>();
+    //获取连续的张量
+    auto contiguous_tensor = this->Contiguous();
+    
+    //获取原始形状
+    auto original_shape = contiguous_tensor->Dims();
+    int64_t ndim = original_shape.size();
+    
+    //处理负索引
+    if (start < 0) start += ndim;
+    if (end < 0) end += ndim;
+    
+    //边界检查
+    CHECK_GE(start, 0) << "Start dimension out of range";
+    CHECK_LT(start, ndim) << "Start dimension out of range";
+    CHECK_GE(end, 0) << "End dimension out of range";
+    CHECK_LT(end, ndim) << "End dimension out of range";
+    CHECK_LE(start, end) << "Start dimension must be <= end dimension";
+    
+    //计算新形状
+    std::vector<int64_t> new_shape;
+    
+    // 添加 start 之前的维度
+    for (int64_t i = 0; i < start; ++i) {
+        new_shape.push_back(original_shape[i]);
+    }
+    
+    // 合并 [start, end] 维度
+    int64_t flattened_size = 1;
+    for (int64_t i = start; i <= end; ++i) {
+        flattened_size *= original_shape[i];
+    }
+    new_shape.push_back(flattened_size);
+    
+    // 添加 end 之后的维度
+    for (int64_t i = end + 1; i < ndim; ++i) {
+        new_shape.push_back(original_shape[i]);
+    }
+    
+    //调用 View 创建新张量
+    return contiguous_tensor->View(new_shape);
 }
 
 std::shared_ptr<Tensor> Tensor::Squeeze(int64_t dim) {
@@ -353,11 +393,42 @@ std::shared_ptr<Tensor> Tensor::RequiresGrad() {
     return shared_from_this();
 }
 
-void Tensor::Backward(std::shared_ptr<Tensor> gradient, bool retain_graph, bool create_graph) const {
-    // =================================== 作业 ===================================
-    // TODO：实现自动微分反向传播
-    // 功能描述：1. 计算当前张量对叶子节点的梯度    2. 支持多输出场景的梯度累加
-    // =================================== 作业 ===================================
+// void Tensor::Backward(std::shared_ptr<Tensor> gradient, bool retain_graph, bool create_graph) const {
+//     // =================================== 作业 ===================================
+//     // TODO：实现自动微分反向传播
+//     // 功能描述：1. 计算当前张量对叶子节点的梯度    2. 支持多输出场景的梯度累加
+//     // =================================== 作业 ===================================
+ 
+// }
+void Tensor::Backward(std::shared_ptr<Tensor> gradient, bool retain_graph, bool create_graph)  {
+    if (!requires_grad_) {
+        return;
+    }
+    
+    // 处理初始梯度
+    if (!gradient) {
+        // 创建单位梯度
+        gradient = std::make_shared<Tensor>(std::vector<int64_t>{}, DataType::kFLOAT32);
+        gradient->Fill(1.0f);
+    }
+    
+    // 如果是叶子节点
+    if (is_leaf_) {
+        // 方法1：直接累积（如果不需要复杂逻辑）
+        if (!grad_) {
+            grad_ = gradient;
+        } else {
+            // 简单的梯度相加
+            grad_ = grad_->Add(gradient);
+        }
+        return;
+    }
+    
+    // 非叶子节点
+    if (grad_fn_) {
+        // 启动反向传播
+        grad_fn_->BackwardPartial(gradient, output_idx_);
+    }
 }
 
 void Tensor::ZeroGrad() {

@@ -179,7 +179,7 @@ public:
     void ZeroGrad();
 
     void Backward(std::shared_ptr<Tensor> gradient = nullptr, bool retain_graph = false,
-                  bool create_graph = false) const;
+                  bool create_graph = false) ;
 
 private:
     std::shared_ptr<Tensor> grad_ = nullptr;
