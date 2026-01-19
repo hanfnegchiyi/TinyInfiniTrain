@@ -58,11 +58,11 @@ private:
 };
 } // namespace infini_train
 
-#define REGISTER_KERNEL(device, kernel_name, kernel_func)                                                              \
     // =================================== 作业 ===================================
     // TODO：实现自动注册宏
     // 功能描述：在全局静态区注册kernel，避免显式初始化代码
     // =================================== 作业 ===================================
+#define REGISTER_KERNEL(device, kernel_name, kernel_func)                 \
     static bool _kernel_registered_##kernel_name = []() {                \
         infini_train::Dispatcher::Instance().Register(                   \
             infini_train::Dispatcher::KeyT{                              \
