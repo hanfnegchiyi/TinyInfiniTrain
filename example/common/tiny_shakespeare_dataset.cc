@@ -33,7 +33,7 @@ const std::unordered_map<TinyShakespeareType, size_t> kTypeToSize = {
     {TinyShakespeareType::kUINT16, 2},
     {TinyShakespeareType::kUINT32, 4},
 };
-
+ 
 const std::unordered_map<TinyShakespeareType, DataType> kTypeToDataType = {
     {TinyShakespeareType::kUINT16, DataType::kUINT16},
     {TinyShakespeareType::kUINT32, DataType::kINT32},
