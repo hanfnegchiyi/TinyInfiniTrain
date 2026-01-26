@@ -61,6 +61,68 @@ TinyShakespeareFile ReadTinyShakespeareFile(const std::string &path, size_t sequ
     | magic(4B) | version(4B) | num_toks(4B) | reserved(1012B) | token数据           |
     ----------------------------------------------------------------------------------
        =================================== 作业 =================================== */
+    // 1. 打开文件
+    std::ifstream ifs(path, std::ios::binary);
+    if (!ifs.is_open()) {
+        LOG(FATAL) << "Cannot open dataset file: " << path;
+    }
+    
+    // 2. 读取头部信息（1024字节）
+    std::vector<uint8_t> header_bytes = ReadSeveralBytesFromIfstream(1024, &ifs);
+    
+    // 3. 解析头部信息
+    uint32_t magic_number = BytesToType<uint32_t>(header_bytes, 0);
+    uint32_t version = BytesToType<uint32_t>(header_bytes, 4);
+    uint32_t num_tokens = BytesToType<uint32_t>(header_bytes, 8);
+    
+    // 4. 根据magic_number确定数据类型
+    auto type_it = kTypeMap.find(magic_number);
+    if (type_it == kTypeMap.end()) {
+        LOG(FATAL) << "Unknown magic number: " << magic_number;
+    }
+    TinyShakespeareType data_type = type_it->second;
+    
+    // 5. 获取数据类型大小和对应的DataType
+    size_t type_size = kTypeToSize.at(data_type);
+    DataType tensor_data_type = kTypeToDataType.at(data_type);
+    
+    // 6. 计算需要读取的数据字节数
+    size_t data_size_bytes = num_tokens * type_size;
+    
+    // 7. 读取token数据
+    std::vector<uint8_t> data_bytes = ReadSeveralBytesFromIfstream(data_size_bytes, &ifs);
+    
+    // 8. 创建Tensor
+    // 数据形状为 [num_tokens]
+    std::vector<int64_t> tensor_dims = {static_cast<int64_t>(num_tokens)};
+    
+    // 创建Tensor对象（不是shared_ptr）
+    infini_train::Tensor tensor(tensor_dims, DataType::kINT64);
+    
+    // 获取Tensor的buffer
+    int64_t* tensor_data = static_cast<int64_t*>(tensor.DataPtr());
+    
+    // 根据原始数据类型复制和转换数据
+    if (data_type == TinyShakespeareType::kUINT16) {
+        // 将uint16数据转换为int64
+        uint16_t* src_data = reinterpret_cast<uint16_t*>(data_bytes.data());
+        for (size_t i = 0; i < num_tokens; i++) {
+            tensor_data[i] = static_cast<int64_t>(src_data[i]);
+        }
+    } else if (data_type == TinyShakespeareType::kUINT32) {
+        // 将uint32数据转换为int64
+        uint32_t* src_data = reinterpret_cast<uint32_t*>(data_bytes.data());
+        for (size_t i = 0; i < num_tokens; i++) {
+            tensor_data[i] = static_cast<int64_t>(src_data[i]);
+        }
+    }
+    // 9. 创建并返回TinyShakespeareFile结构体
+    TinyShakespeareFile result;
+    result.type = data_type;
+    result.dims = tensor_dims;
+    result.tensor = std::move(tensor);  // 使用移动语义
+    
+    return result;
 }
 } // namespace
 
@@ -69,6 +131,29 @@ TinyShakespeareDataset::TinyShakespeareDataset(const std::string &filepath, size
     // TODO：初始化数据集实例
     // HINT: 调用ReadTinyShakespeareFile加载数据文件
     // =================================== 作业 ===================================
+    // 1. 读取数据集文件
+    text_file_ = ReadTinyShakespeareFile(filepath, sequence_length);
+    
+    // 2. 获取数据类型大小
+    size_t type_size = kTypeToSize.at(text_file_.type);
+    
+    // 3. 计算sequence的字节大小（不能在初始化列表后修改常量成员）
+    // 我们需要通过const_cast修改，但更好的方式是在初始化列表中计算
+    // 这里我们重新设计：sequence_size_in_bytes_应该是非常量成员
+    
+    // 4. 获取总token数
+    uint32_t num_tokens = text_file_.dims[0];
+    
+    // 5. 计算样本数量
+    const_cast<size_t&>(sequence_size_in_bytes_) = sequence_length * type_size * 2;
+    const_cast<size_t&>(num_samples_) = (num_tokens - 1) / sequence_length;
+    
+    // 6. 验证数据是否足够
+    if (num_samples_ == 0) {
+        LOG(FATAL) << "Dataset too small for sequence length " << sequence_length 
+                   << ". Need at least " << (sequence_length + 1) << " tokens.";
+    }
+
 }
 
 std::pair<std::shared_ptr<infini_train::Tensor>, std::shared_ptr<infini_train::Tensor>>

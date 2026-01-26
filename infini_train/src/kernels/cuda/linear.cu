@@ -23,266 +23,192 @@ namespace infini_train::kernels::cuda {
         }                                                                                                              \
     } while (0)
 
-// 批量矩阵乘法kernel
-__global__ void batched_matmul_forward_kernel(
-    const float* A, const float* B, float* C,
-    int M, int N, int K,
-    int batch_size) {
-    
-    // 使用3D grid: x对应列，y对应行，z对应batch
-    int batch = blockIdx.z;
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
-    
-    if (batch < batch_size && row < M && col < N) {
-        // 计算当前batch的偏移
-        int A_offset = batch * M * K;
-        int B_offset = batch * K * N;
-        int C_offset = batch * M * N;
-        
-        float sum = 0.0f;
-        for (int k_idx = 0; k_idx < K; ++k_idx) {
-            int idx_A = A_offset + row * K + k_idx;
-            int idx_B = B_offset + k_idx * N + col;
-            sum += A[idx_A] * B[idx_B];
-        }
-        
-        int idx_C = C_offset + row * N + col;
-        C[idx_C] = sum;
-    }
-}
-
-// 支持广播的批量矩阵乘法kernel
-__global__ void batched_matmul_broadcast_kernel(
-    const float* A, const float* B, float* C,
-    int M, int N, int K,
-    int batch_size_A, int batch_size_B, int batch_size_C,
-    int stride_A, int stride_B, int stride_C) {
-    
-    int batch = blockIdx.z;
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
-    
-    if (row < M && col < N && batch < batch_size_C) {
-        int batch_A = (batch_size_A == 1) ? 0 : batch;
-        int batch_B = (batch_size_B == 1) ? 0 : batch;
-        
-        // 计算偏移
-        int A_offset = batch_A * stride_A;
-        int B_offset = batch_B * stride_B;
-        int C_offset = batch * stride_C;
-        
-        float sum = 0.0f;
-        for (int k = 0; k < K; ++k) {
-            int idx_A = A_offset + row * K + k;
-            int idx_B = B_offset + k * N + col;
-            sum += A[idx_A] * B[idx_B];
-        }
-        
-        int idx_C = C_offset + row * N + col;
-        C[idx_C] = sum;
-    }
-}
-
-// 批量矩阵乘法包装函数
 void BatchedMatmulForwardCUDA(const float* A, const float* B, float* C,
-                              int M, int N, int K, int batch_size, cudaStream_t stream) {
-    
-    // 设置3D网格
-    dim3 blockSize(16, 16);
-    dim3 gridSize((N + blockSize.x - 1) / blockSize.x,
-                  (M + blockSize.y - 1) / blockSize.y,
-                  batch_size);
-    
-    batched_matmul_forward_kernel<<<gridSize, blockSize, 0, stream>>>(
-        A, B, C, M, N, K, batch_size);
-}
+                              int M, int N, int K,
+                              int batch_size,
+                              cudaStream_t stream) {
+    const float alpha = 1.0f;
+    const float beta  = 0.0f;
 
-// 支持广播的批量矩阵乘法
-void BatchedMatmulBroadcastCUDA(const float* A, const float* B, float* C,
-                                int M, int N, int K,
-                                int batch_size_A, int batch_size_B, int batch_size_C,
-                                cudaStream_t stream) {
-    
-    // 计算每个batch的步长
-    int stride_A = M * K;
-    int stride_B = K * N;
-    int stride_C = M * N;
-    
-    dim3 blockSize(16, 16);
-    dim3 gridSize((N + blockSize.x - 1) / blockSize.x,
-                  (M + blockSize.y - 1) / blockSize.y,
-                  batch_size_C);
-    
-    batched_matmul_broadcast_kernel<<<gridSize, blockSize, 0, stream>>>(
-        A, B, C, M, N, K,
-        batch_size_A, batch_size_B, batch_size_C,
-        stride_A, stride_B, stride_C);
-}
-
-// 反向传播：计算dA = dC * B^T
-__global__ void matmul_backward_dA_kernel(
-    const float* dC, const float* B, float* dA,
-    int M, int N, int K) {
-    
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
-    
-    if (row < M && col < K) {
-        float sum = 0.0f;
-        for (int n = 0; n < N; ++n) {
-            int idx_dC = row * N + n;
-            int idx_B = col * N + n;  // B^T的索引
-            sum += dC[idx_dC] * B[idx_B];
-        }
-        
-        int idx_dA = row * K + col;
-        dA[idx_dA] = sum;
+    cublasHandle_t handle;
+    CUBLAS_CHECK(cublasCreate(&handle));
+    if (stream) {
+        CUBLAS_CHECK(cublasSetStream(handle, stream));
     }
-}
 
-// 反向传播：计算dB = A^T * dC
-__global__ void matmul_backward_dB_kernel(
-    const float* A, const float* dC, float* dB,
-    int M, int N, int K) {
-    
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
-    
-    if (row < K && col < N) {
-        float sum = 0.0f;
-        for (int m = 0; m < M; ++m) {
-            int idx_A = m * K + row;  // A^T的索引
-            int idx_dC = m * N + col;
-            sum += A[idx_A] * dC[idx_dC];
-        }
-        
-        int idx_dB = row * N + col;
-        dB[idx_dB] = sum;
+    const int64_t A_stride = M * K;
+    const int64_t B_stride = K * N;
+    const int64_t C_stride = M * N;
+
+    for (int b = 0; b < batch_size; ++b) {
+        const float* A_ptr = A + b * A_stride; // [M, K] row-major
+        const float* B_ptr = B + b * B_stride; // [K, N] row-major
+        float*       C_ptr = C + b * C_stride; // [M, N] row-major
+
+        // C = A @ B
+        // C^T = B^T @ A^T
+        CUBLAS_CHECK(cublasSgemm(
+            handle,
+            CUBLAS_OP_N, CUBLAS_OP_N,
+            N, M, K,
+            &alpha,
+            B_ptr, N,   // B^T: [N, K]
+            A_ptr, K,   // A^T: [K, M]
+            &beta,
+            C_ptr, N)); // C^T: [N, M]
     }
-}
 
+    CUBLAS_CHECK(cublasDestroy(handle));
+}
 void MatmulBackwardCUDA(const float* A, const float* B, const float* dC,
                         float* dA, float* dB,
-                        int M, int N, int K, cudaStream_t stream) {
-    
-    // 计算dA
-    dim3 blockSize_dA(16, 16);
-    dim3 gridSize_dA((K + blockSize_dA.x - 1) / blockSize_dA.x,
-                     (M + blockSize_dA.y - 1) / blockSize_dA.y);
-    matmul_backward_dA_kernel<<<gridSize_dA, blockSize_dA, 0, stream>>>(dC, B, dA, M, N, K);
-    
-    // 计算dB
-    dim3 blockSize_dB(16, 16);
-    dim3 gridSize_dB((N + blockSize_dB.x - 1) / blockSize_dB.x,
-                     (K + blockSize_dB.y - 1) / blockSize_dB.y);
-    matmul_backward_dB_kernel<<<gridSize_dB, blockSize_dB, 0, stream>>>(A, dC, dB, M, N, K);
-}
-std::shared_ptr<Tensor> MatmulForward(const std::shared_ptr<Tensor> &input, const std::shared_ptr<Tensor> &other) {
-    // =================================== 作业 ===================================
-    // TODO：实现CUDA上的矩阵乘法前向计算
-    // REF:
-    // =================================== 作业 ===================================
-    // 检查输入维度
-    auto input_dims = input->Dims();
-    auto other_dims = other->Dims();
-    
-    if (input_dims.size() < 2 || other_dims.size() < 2) {
-        throw std::runtime_error("MatMul requires at least 2D tensors");
-    }
-    
-    // 获取最后两个维度
-    int64_t m = input_dims[input_dims.size() - 2];
-    int64_t k = input_dims[input_dims.size() - 1];
-    int64_t n = other_dims[other_dims.size() - 1];
-    
-    // 检查维度是否匹配
-    if (k != other_dims[other_dims.size() - 2]) {
-        throw std::runtime_error("Matrix dimensions do not match for multiplication");
-    }
-    
-    // 计算输出维度
-    std::vector<int64_t> output_dims;
-    // 处理广播：比较除最后两个维度外的所有维度
-    size_t num_batch_dims = std::max(input_dims.size(), other_dims.size()) - 2;
-    for (size_t i = 0; i < num_batch_dims; ++i) {
-        int64_t dim1 = (i < input_dims.size() - 2) ? input_dims[i] : 1;
-        int64_t dim2 = (i < other_dims.size() - 2) ? other_dims[i] : 1;
-        if (dim1 != dim2 && dim1 != 1 && dim2 != 1) {
-            throw std::runtime_error("Batch dimensions are not broadcastable");
-        }
-        output_dims.push_back(std::max(dim1, dim2));
-    }
-    output_dims.push_back(m);
-    output_dims.push_back(n);
-    
-    // 计算batch size（所有batch维度的乘积）
-    int64_t batch_size = 1;
-    for (size_t i = 0; i < output_dims.size() - 2; ++i) {
-        batch_size *= output_dims[i];
-    }
-    
-    // 创建输出Tensor
-    auto output = std::make_shared<Tensor>(output_dims, input->Dtype(), input->GetDevice());
-    
-    // 获取CUDA设备
-    auto device = input->GetDevice();
-    if (device.Type() != DeviceType::kCUDA) {
-        throw std::runtime_error("This function requires CUDA device");
+                        int M, int N, int K,
+                        cudaStream_t stream) {
+    const float alpha = 1.0f;
+    const float beta  = 0.0f;
+
+    cublasHandle_t handle;
+    CUBLAS_CHECK(cublasCreate(&handle));
+    if (stream) {
+        CUBLAS_CHECK(cublasSetStream(handle, stream));
     }
 
-    // 获取数据指针
-    float* input_data = static_cast<float*>(input->DataPtr());
-    float* other_data = static_cast<float*>(other->DataPtr());
-    float* output_data = static_cast<float*>(output->DataPtr());
-    
-    // 调用批量矩阵乘法kernel
-    // 注意：需要实现BatchedMatmulForwardCUDA函数
-    BatchedMatmulForwardCUDA(input_data, other_data, output_data,
-                             static_cast<int>(m), static_cast<int>(n), static_cast<int>(k),
-                             static_cast<int>(batch_size), nullptr);
-    
-    return output;
-}
+    // ============================
+    // dA = dC @ B^T  => dA^T = B @ dC^T
+    // B 是 Row-major [K, N], 在 cuBLAS 眼里是 Col-major [N, K]
+    // dC 是 Row-major [M, N], 在 cuBLAS 眼里是 Col-major [N, M]
+    // 输出 dA^T 是 [K, M], 即 Col-major [K, M]
+    // ============================
+    CUBLAS_CHECK(cublasSgemm(
+        handle,
+        CUBLAS_OP_T, CUBLAS_OP_N, 
+        K, M, N,
+        &alpha,
+        B, N,      // Row-major B 的列数是 N
+        dC, N,     // Row-major dC 的列数是 N
+        &beta,
+        dA, K));   // Row-major dA 的列数是 K
 
+    // ============================
+    // dB = A^T @ dC => dB^T = dC^T @ A
+    // 我们需要计算 [N, M] * [M, K] = [N, K]
+    // dC^T 在内存里已经是 Col-major [N, M] (即 OP_N)
+    // A 在内存里是 Row-major [M, K], 等价于 Col-major [K, M] (即需要 OP_T 变成 [M, K])
+    // ============================
+    CUBLAS_CHECK(cublasSgemm(
+        handle,
+        CUBLAS_OP_N, CUBLAS_OP_T, 
+        N, K, M,
+        &alpha,
+        dC, N,     // Row-major dC 的列数是 N
+        A,  K,     // Row-major A 的列数是 K
+        &beta,
+        dB, N));   // Row-major dB 的列数是 N
+
+    CUBLAS_CHECK(cublasDestroy(handle));
+}
 std::tuple<std::shared_ptr<Tensor>, std::shared_ptr<Tensor>>
-MatmulBackward(const std::shared_ptr<Tensor> &input, const std::shared_ptr<Tensor> &other,
-               const std::shared_ptr<Tensor> &grad_output) {
-    // =================================== 作业 ===================================
-    // TODO：实现CUDA上的矩阵乘法反向传播
-    // REF:
-    // =================================== 作业 ===================================
+MatmulBackward(const std::shared_ptr<Tensor>& input,
+               const std::shared_ptr<Tensor>& other,
+               const std::shared_ptr<Tensor>& grad_output) {
+    const auto& in_dims = input->Dims();
+    const auto& ot_dims = other->Dims();
 
-    auto device = input->GetDevice();
-    if (device.Type() != DeviceType::kCUDA) {
-        throw std::runtime_error("This function requires CUDA device");
-    }
+    const int64_t M = in_dims[in_dims.size() - 2];
+    const int64_t K = in_dims[in_dims.size() - 1];
+    const int64_t N = ot_dims[ot_dims.size() - 1];
 
-    auto input_dims = input->Dims();
-    auto other_dims = other->Dims();
+    auto grad_input = std::make_shared<Tensor>(
+        in_dims, DataType::kFLOAT32, grad_output->GetDevice());
+    auto grad_other = std::make_shared<Tensor>(
+        ot_dims, DataType::kFLOAT32, grad_output->GetDevice());
 
-    int64_t m = input_dims[input_dims.size() - 2];
-    int64_t k = input_dims[input_dims.size() - 1];
-    int64_t n = other_dims[other_dims.size() - 1];
-    // 创建梯度Tensor
-    auto grad_input = std::make_shared<Tensor>(input->Dims(), input->Dtype(), device);
-    auto grad_other = std::make_shared<Tensor>(other->Dims(), other->Dtype(), device);
-    
-    float* input_data = static_cast<float*>(input->DataPtr());
-    float* other_data = static_cast<float*>(other->DataPtr());
-    float* grad_output_data = static_cast<float*>(grad_output->DataPtr());
-    float* grad_input_data = static_cast<float*>(grad_input->DataPtr());
-    float* grad_other_data = static_cast<float*>(grad_other->DataPtr());
-    
-    // 直接调用CUDA函数
-    MatmulBackwardCUDA(input_data, other_data, grad_output_data,
-                       grad_input_data, grad_other_data,
-                       static_cast<int>(m), static_cast<int>(n), static_cast<int>(k),
-                       nullptr);  // 使用默认stream
-    
+    MatmulBackwardCUDA(
+        static_cast<const float*>(input->DataPtr()),
+        static_cast<const float*>(other->DataPtr()),
+        static_cast<const float*>(grad_output->DataPtr()),
+        static_cast<float*>(grad_input->DataPtr()),
+        static_cast<float*>(grad_other->DataPtr()),
+        M, N, K,
+        nullptr);
+
     return {grad_input, grad_other};
 }
+std::shared_ptr<Tensor>
+MatmulForward(const std::shared_ptr<Tensor>& input,
+              const std::shared_ptr<Tensor>& other) {
+    const auto& input_dims = input->Dims();
+    const auto& other_dims = other->Dims();
 
+    CHECK_GE(input_dims.size(), 2);
+    CHECK_GE(other_dims.size(), 2);
+
+    const int64_t M = input_dims[input_dims.size() - 2];
+    const int64_t K = input_dims[input_dims.size() - 1];
+    const int64_t N = other_dims[other_dims.size() - 1];
+    const int64_t K_other = other_dims[other_dims.size() - 2];
+    CHECK_EQ(K, K_other);
+
+    // -------- batch broadcast --------
+    const size_t num_batch_dims =
+        std::max(input_dims.size(), other_dims.size()) - 2;
+
+    std::vector<int64_t> batch_dims;
+    int64_t batch_size = 1;
+
+    for (size_t i = 0; i < num_batch_dims; ++i) {
+        const int64_t dim1 =
+            (i < input_dims.size() - 2) ? input_dims[i] : 1;
+        const int64_t dim2 =
+            (i < other_dims.size() - 2) ? other_dims[i] : 1;
+
+        CHECK(dim1 == dim2 || dim1 == 1 || dim2 == 1);
+        const int64_t out_dim = std::max(dim1, dim2);
+        batch_dims.push_back(out_dim);
+        batch_size *= out_dim;
+    }
+
+    std::vector<int64_t> output_dims = batch_dims;
+    output_dims.push_back(M);
+    output_dims.push_back(N);
+
+    auto output = std::make_shared<Tensor>(
+        output_dims, DataType::kFLOAT32, input->GetDevice());
+
+    const int64_t input_stride  = M * K;
+    const int64_t other_stride  = K * N;
+    const int64_t output_stride = M * N;
+
+    const float alpha = 1.0f;
+    const float beta  = 0.0f;
+
+    cublasHandle_t handle;
+    CUBLAS_CHECK(cublasCreate(&handle));
+
+    for (int64_t b = 0; b < batch_size; ++b) {
+        const float* input_ptr =
+            static_cast<const float*>(input->DataPtr()) + b * input_stride;
+        const float* other_ptr =
+            static_cast<const float*>(other->DataPtr()) + b * other_stride;
+        float* output_ptr =
+            static_cast<float*>(output->DataPtr()) + b * output_stride;
+
+        // output = input @ other
+        // output^T = other^T @ input^T
+        CUBLAS_CHECK(cublasSgemm(
+            handle,
+            CUBLAS_OP_N, CUBLAS_OP_N,
+            N, M, K,
+            &alpha,
+            other_ptr, N,
+            input_ptr, K,
+            &beta,
+            output_ptr, N));
+    }
+
+    CUBLAS_CHECK(cublasDestroy(handle));
+    return output;
+}
 __global__ void BiasCopyKernel(float *output, const float *bias, int bs, int out_features) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= bs * out_features) {
