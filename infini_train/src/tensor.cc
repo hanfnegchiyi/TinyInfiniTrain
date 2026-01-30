@@ -290,17 +290,10 @@ std::shared_ptr<Tensor> Tensor::Flatten(int64_t start, int64_t end) {
     //获取原始形状
     auto original_shape = contiguous_tensor->Dims();
     int64_t ndim = original_shape.size();
-    
+     
     //处理负索引
     if (start < 0) start += ndim;
     if (end < 0) end += ndim;
-    
-    //边界检查
-    CHECK_GE(start, 0) << "Start dimension out of range";
-    CHECK_LT(start, ndim) << "Start dimension out of range";
-    CHECK_GE(end, 0) << "End dimension out of range";
-    CHECK_LT(end, ndim) << "End dimension out of range";
-    CHECK_LE(start, end) << "Start dimension must be <= end dimension";
     
     //计算新形状
     std::vector<int64_t> new_shape;
@@ -393,32 +386,27 @@ std::shared_ptr<Tensor> Tensor::RequiresGrad() {
     return shared_from_this();
 }
 
-// void Tensor::Backward(std::shared_ptr<Tensor> gradient, bool retain_graph, bool create_graph) const {
-//     // =================================== 作业 ===================================
-//     // TODO：实现自动微分反向传播
-//     // 功能描述：1. 计算当前张量对叶子节点的梯度    2. 支持多输出场景的梯度累加
-//     // =================================== 作业 ===================================
- 
-// }
 void Tensor::Backward(std::shared_ptr<Tensor> gradient, bool retain_graph, bool create_graph)  {
+    // =================================== 作业 ===================================
+    // TODO：实现自动微分反向传播
+    // 功能描述：1. 计算当前张量对叶子节点的梯度    2. 支持多输出场景的梯度累加
+    // =================================== 作业 ===================================
+    //判断是否需要梯度
     if (!requires_grad_) {
         return;
     }
     
     // 处理初始梯度
     if (!gradient) {
-        // 创建单位梯度
         gradient = std::make_shared<Tensor>(std::vector<int64_t>{}, DataType::kFLOAT32);
         gradient->Fill(1.0f);
     }
     
-    // 如果是叶子节点
+    // 如果是叶子节点，直接累积
     if (is_leaf_) {
-        // 方法1：直接累积（如果不需要复杂逻辑）
         if (!grad_) {
             grad_ = gradient;
         } else {
-            // 简单的梯度相加
             grad_ = grad_->Add(gradient);
         }
         return;
@@ -426,7 +414,6 @@ void Tensor::Backward(std::shared_ptr<Tensor> gradient, bool retain_graph, bool 
     
     // 非叶子节点
     if (grad_fn_) {
-        // 启动反向传播
         grad_fn_->BackwardPartial(gradient, output_idx_);
     }
 }

@@ -22,6 +22,7 @@ void AccumulateGrad(const std::shared_ptr<Tensor> &gradient, float rate, const s
     AccumulateGradKernel<<<num_blocks, threads_per_block>>>(grad_ptr, rate, tensor_ptr, num_elements);
 }
 
+//cuda核函数
 __global__ void adam_update_kernel(
     const float* __restrict__ grad,
     float* __restrict__ param,

@@ -78,15 +78,18 @@ Tokenizer::Tokenizer(const std::string &filepath) {
     | magic(4B) | version(4B) | vocab_size(4B) | reserved(1012B) | token词表数据       |
     ----------------------------------------------------------------------------------
     ===================================== 作业 ===================================== */
+    //打开二进制文件
     std::ifstream ifs(filepath, std::ios::binary);
+    //读取1024长度的头
     std::vector<uint8_t> header_bytes = ReadSeveralBytesFromIfstream(1024,&ifs);
+    //根据偏移读取数值
     magic_number_ = BytesToType<uint32_t>(header_bytes,0);
     uint32_t version_data = BytesToType<uint32_t>(header_bytes,4);
     vocab_size_ = BytesToType<uint32_t>(header_bytes,8);
-
+    //根据magic_number_找到结束符
     auto it = kEotMap.find(magic_number_);
     eot_token_ = it->second;
-
+    //词表预留空间
     token_table_.reserve(vocab_size_);
     for(int i = 0; i < vocab_size_;i++){
         //读取当前token字节长度
@@ -135,14 +138,14 @@ void Tokenizer::GenerateText(infini_train::nn::Module &model, uint32_t batch_siz
         std::vector<std::shared_ptr<infini_train::Tensor>> result = model.Forward({x});
         auto logits_tensor = result[0];
         
-        // 2. 获取logits形状
+        // 获取logits形状
         auto logits_shape = logits_tensor->Dims();
         int64_t vocab_size = logits_shape[2];  // 从tensor获取vocab_size
         
-        // 3. 准备概率数组
+        // 准备概率数组
         std::vector<float> probabilities(vocab_size);
         
-        // 4. 处理每个batch
+        // 处理每个batch
         for (int b = 0; b < batch_size; b++) {
             // 计算当前batch最后一个位置的logits起始偏移
             int64_t batch_offset = b * sequence_length * vocab_size;
@@ -152,7 +155,7 @@ void Tokenizer::GenerateText(infini_train::nn::Module &model, uint32_t batch_siz
             // 获取logits指针
             float* logits_ptr = static_cast<float*>(logits_tensor->DataPtr()) + start_idx;
             
-            // 5. 计算softmax
+            // 计算softmax
             float max_logit = -std::numeric_limits<float>::max();
             for (int v = 0; v < vocab_size; v++) {
                 if (logits_ptr[v] > max_logit) {
@@ -171,18 +174,18 @@ void Tokenizer::GenerateText(infini_train::nn::Module &model, uint32_t batch_siz
                 probabilities[v] /= sum_exp;
             }
             
-            // 6. 采样下一个token
+            // 采样下一个token
             float random_val = RandomF32(kRngState);
             int next_token_id = SampleMult(probabilities.data(), vocab_size, random_val);
             
-            // 7. 更新当前batch的输入序列
+            // 更新当前batch的输入序列
             int64_t *batch_x_buff = x_buff + b * sequence_length;
             for (int i = 0; i < sequence_length - 1; i++) {
                 batch_x_buff[i] = batch_x_buff[i + 1];
             }
             batch_x_buff[sequence_length - 1] = next_token_id;
             
-            // 8. 输出第一个batch的token
+            // 输出第一个batch的token
             if (b == 0) {
                 std::string next_token_text = Decode(next_token_id);
                 std::cout << next_token_text;
@@ -190,7 +193,7 @@ void Tokenizer::GenerateText(infini_train::nn::Module &model, uint32_t batch_siz
             }
         }
         
-        // 9. 更新x张量用于下一次迭代
+        // 更新x张量用于下一次迭代
         x = std::make_shared<infini_train::Tensor>(x_tensor.To(device));
 
     }

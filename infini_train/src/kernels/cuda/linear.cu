@@ -28,11 +28,11 @@ std::shared_ptr<Tensor> MatmulForward(const std::shared_ptr<Tensor> &input, cons
     // TODO：实现CUDA上的矩阵乘法前向计算
     // REF:
     // =================================== 作业 ===================================
-
+    //获取输入张量维度
     const auto& input_dims = input->Dims();
     const auto& other_dims = other->Dims();
 
-    // 1. 基础维度校验
+    //基础维度校验
     CHECK_GE(input_dims.size(), 2);
     CHECK_GE(other_dims.size(), 2);
     int64_t M = input_dims[input_dims.size() - 2];
@@ -40,24 +40,24 @@ std::shared_ptr<Tensor> MatmulForward(const std::shared_ptr<Tensor> &input, cons
     int64_t N = other_dims[other_dims.size() - 1];
     CHECK_EQ(K, other_dims[other_dims.size() - 2]);
 
-    // 2. 计算 Batch Size (处理高维情况)
+    //计算Batch Size
     int64_t batch_size = 1;
     for (size_t i = 0; i < input_dims.size() - 2; ++i) {
         batch_size *= input_dims[i];
     }
 
-    // 3. 创建输出 Tensor
+    //创建输出 Tensor
     auto output_dims = input_dims;
     output_dims[output_dims.size() - 1] = N;
     auto output = std::make_shared<Tensor>(output_dims, DataType::kFLOAT32, input->GetDevice());
 
-    // 4. 【核心】静态句柄：解决 3080 Ti 的初始化报错
+    //创建句柄被正确创建
     static cublasHandle_t handle = nullptr;
     if (handle == nullptr) {
         CUBLAS_CHECK(cublasCreate(&handle));
     }
 
-    // 5. 执行计算
+    //调用cublasSgemm计算
     const float alpha = 1.0f;
     const float beta  = 0.0f;
     int64_t A_stride = M * K;
@@ -68,8 +68,6 @@ std::shared_ptr<Tensor> MatmulForward(const std::shared_ptr<Tensor> &input, cons
         const float* A_ptr = static_cast<const float*>(input->DataPtr()) + b * A_stride;
         const float* B_ptr = static_cast<const float*>(other->DataPtr()) + b * B_stride;
         float* C_ptr = static_cast<float*>(output->DataPtr()) + b * C_stride;
-
-        // 利用官方 Linear 的思路：Row-major 矩阵乘法
         // C = A * B  =>  C.T = B.T * A.T
         CUBLAS_CHECK(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, 
                                  N, M, K, 
@@ -108,6 +106,7 @@ MatmulBackward(const std::shared_ptr<Tensor> &input, const std::shared_ptr<Tenso
         CUBLAS_CHECK(cublasCreate(&handle));
     }
 
+    //调用cublasSgemm计算
     const float alpha = 1.0f;
     const float beta  = 0.0f;
 
@@ -123,22 +122,22 @@ MatmulBackward(const std::shared_ptr<Tensor> &input, const std::shared_ptr<Tenso
         float* dB = static_cast<float*>(grad_other->DataPtr()) + b * B_stride;
 
         CUBLAS_CHECK(cublasSgemm(handle, 
-                                 CUBLAS_OP_T, CUBLAS_OP_N, // 关键：转置 B，不转置 dC
+                                 CUBLAS_OP_T, CUBLAS_OP_N, 
                                  K, M, N, 
                                  &alpha, 
-                                 B, N,      // lda = N
-                                 dC, N,     // ldb = N
+                                 B, N,     
+                                 dC, N,    
                                  &beta, 
-                                 dA, K));   // ldc = K
+                                 dA, K));  
 
         CUBLAS_CHECK(cublasSgemm(handle, 
-                                 CUBLAS_OP_N, CUBLAS_OP_T, // 关键：不转置 dC，转置 A
+                                 CUBLAS_OP_N, CUBLAS_OP_T, 
                                  N, K, M, 
                                  &alpha, 
-                                 dC, N,     // lda = N
-                                 A, K,      // ldb = K
+                                 dC, N,    
+                                 A, K,     
                                  &beta, 
-                                 dB, N));   // ldc = N
+                                 dB, N));  
     }
 
     return {grad_input, grad_other};

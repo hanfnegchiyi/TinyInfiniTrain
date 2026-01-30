@@ -21,7 +21,7 @@ void AdamAccumulateGrad(const std::shared_ptr<Tensor> &grad, const std::shared_p
     // 获取元素个数
     size_t n = param->NumElements();
     
-    // 使用 DataPtr() 而不是 Data()
+    // 获取数据指针
     float* grad_data = static_cast<float*>(grad->DataPtr());
     float* param_data = static_cast<float*>(param->DataPtr());
     float* m_data = static_cast<float*>(m->DataPtr());
@@ -40,7 +40,7 @@ void AdamAccumulateGrad(const std::shared_ptr<Tensor> &grad, const std::shared_p
         // 更新一阶矩（动量）
         m_data[i] = beta1 * m_data[i] + (1.0f - beta1) * gi;
         
-        // 更新二阶矩
+        // 更新二阶矩（更新波动）
         v_data[i] = beta2 * v_data[i] + (1.0f - beta2) * gi * gi;
         
         // 偏差校正后的估计
