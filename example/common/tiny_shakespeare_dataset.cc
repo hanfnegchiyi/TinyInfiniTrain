@@ -95,7 +95,7 @@ TinyShakespeareFile ReadTinyShakespeareFile(const std::string &path, size_t sequ
     // 创建Tensor
     // [num_tokens]
     std::vector<int64_t> tensor_dims = {static_cast<int64_t>(num_tokens)};
-    infini_train::Tensor tensor(tensor_dims, DataType::kINT64);】
+    infini_train::Tensor tensor(tensor_dims, DataType::kINT64);
     int64_t* tensor_data = static_cast<int64_t*>(tensor.DataPtr());
     
     // 创建并返回TinyShakespeareFile结构体
